@@ -15,8 +15,13 @@ class RawInput(BaseModel):
     input_type: InputType
     content: str                            # text content or base64 image
     source_url: Optional[str] = None
-    file_name: Optional[str] = None         # for PDFs
+    file_name: Optional[str] = None         # original filename (PDFs, images)
     original_message: Optional[str] = None  # verbatim text the user sent
+    file_bytes: Optional[bytes] = None      # raw bytes for Notion file upload (IMAGE + PDF only)
+    file_mime_type: Optional[str] = None    # MIME type for upload (e.g. image/jpeg, application/pdf)
+
+    class Config:
+        arbitrary_types_allowed = True      # needed for bytes field
 
 
 class ProcessedEntry(BaseModel):

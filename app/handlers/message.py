@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from telegram import Update
 from telegram.ext import ContextTypes
@@ -13,7 +14,7 @@ from app.models import InputType, RawInput
 from app.processors.ai import process_with_ai
 from app.processors.intent import classify_intent, Intent
 from app.session import session_store
-from app.storage.notion import write_to_notion, update_notion_entry
+from app.storage.notion import write_to_notion, update_notion_entry, upload_and_attach_file
 from app.exceptions import GroqError, NotionError, TelegramFileError
 
 
@@ -61,6 +62,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         entry = process_with_ai(raw)
         page_id = write_to_notion(entry)
+
+        # Fire background file upload (non-blocking) for IMAGE and PDF
+        if raw.file_bytes and raw.file_mime_type:
+            file_name = raw.file_name or (
+                "image.jpg" if raw.input_type == InputType.IMAGE else "document.pdf"
+            )
+            asyncio.create_task(
+                _upload_file_background(page_id, raw.file_bytes, file_name, raw.file_mime_type, message)
+            )
 
         # Store in session for potential follow-up
         session_store.set(user_id, {
@@ -158,10 +168,13 @@ async def _extract_content(message, input_type: InputType, context) -> RawInput:
         except Exception as e:
             raise TelegramFileError("image download failed") from e
         caption = getattr(message, "caption", None)
+        image_bytes_final = bytes(image_bytes)
         return RawInput(
             input_type=input_type,
-            content=prepare_image(bytes(image_bytes)),
+            content=prepare_image(image_bytes_final),
             original_message=caption,
+            file_bytes=image_bytes_final,
+            file_mime_type="image/jpeg",
         )
 
     elif input_type == InputType.PDF:
@@ -171,11 +184,14 @@ async def _extract_content(message, input_type: InputType, context) -> RawInput:
         except Exception as e:
             raise TelegramFileError("PDF download failed") from e
         caption = getattr(message, "caption", None)
+        pdf_bytes_final = bytes(pdf_bytes)
         return RawInput(
             input_type=input_type,
-            content=extract_pdf(bytes(pdf_bytes)),
+            content=extract_pdf(pdf_bytes_final),
             file_name=message.document.file_name,
             original_message=caption,
+            file_bytes=pdf_bytes_final,
+            file_mime_type="application/pdf",
         )
 
     elif input_type == InputType.VOICE:
@@ -190,3 +206,19 @@ async def _extract_content(message, input_type: InputType, context) -> RawInput:
             content=transcript,
             original_message=transcript,  # transcription is the original message for voice
         )
+
+
+async def _upload_file_background(
+    page_id: str,
+    file_bytes: bytes,
+    file_name: str,
+    mime_type: str,
+    message,
+) -> None:
+    """Background coroutine: upload file to Notion and notify user."""
+    try:
+        await upload_and_attach_file(page_id, file_bytes, file_name, mime_type)
+        await message.reply_text("📎 File attached to your entry.")
+    except Exception as exc:
+        logger.exception("Background file upload failed: %s", exc)
+        await message.reply_text("⚠️ Entry saved but couldn't attach the file.")

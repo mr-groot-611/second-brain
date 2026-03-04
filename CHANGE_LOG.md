@@ -1,6 +1,6 @@
 # Change Log
 > Rewritten each session. Claude Code should apply all changes listed here that haven't been deployed yet.
-> Last updated: March 2026 (Session 2 — post-deployment bug fixes)
+> Last updated: March 2026 (Session 2 — post-deployment bug fixes + file upload design)
 
 ---
 
@@ -75,6 +75,50 @@ except APIError as e:
    - `NotionError` → tells user to check Render env vars
    - `TelegramFileError` → tells user to resend the file
    - `Exception` (fallback) → generic message + suggestion to check Render logs
+
+---
+
+## Session 2 — File Upload Feature
+
+### Status: Implemented — ready to deploy
+
+**Decision summary:**
+- Files (images, PDFs) will be uploaded directly to Notion using the Notion File Upload API — no external hosting needed
+- Voice notes: skip file upload entirely — the transcription is the value
+- Files are embedded as **blocks in the page body** (image block for images, file block for PDFs), NOT as a database property — the Notion Files & Media property type doesn't support file_upload IDs via API
+- The `File` database property has been dropped from the Notion schema (done via MCP already)
+- Voice transcripts stored in `Original Message` is correct and consistent — no exception needed
+
+**Flow (agreed):**
+1. User sends file → normal pipeline runs → Notion entry created → "✅ Saved as..." sent immediately
+2. `asyncio.create_task()` fires background coroutine (user unblocked)
+3. Background: upload file bytes to Notion → append image/file block to page → send "📎 File attached to your entry."
+4. On upload failure: "⚠️ Entry saved but couldn't attach the file."
+
+**Notion File Upload API (3 steps for files < 20MB):**
+```
+POST /v1/file_uploads                          → get upload ID
+POST /v1/file_uploads/{id}/send                → multipart/form-data with file bytes
+PATCH /v1/blocks/{page_id}/children            → append image or file block
+```
+Block format for image:
+```json
+{"type": "image", "image": {"type": "file_upload", "file_upload": {"id": "<upload_id>"}}}
+```
+Block format for PDF:
+```json
+{"type": "file", "file": {"type": "file_upload", "file_upload": {"id": "<upload_id>"}, "caption": []}}
+```
+
+**Files to create/modify:**
+1. `app/models.py` — add `file_bytes: Optional[bytes] = None` and `file_mime_type: Optional[str] = None` to `RawInput`
+2. `app/handlers/message.py` — store raw bytes in `RawInput` for IMAGE and PDF; fire `asyncio.create_task(_upload_file_background(...))` after `write_to_notion`; add `_upload_file_background` async function
+3. `app/storage/notion.py` — add `upload_and_attach_file(page_id, file_bytes, file_name, mime_type)` async function using `httpx.AsyncClient`
+
+**Constraints:**
+- Free Notion tier: 5 MiB per file (images and PDFs are well within this)
+- `notion-client` Python library doesn't wrap file upload — use raw `httpx` calls
+- Notion-Version header: `2022-06-28` (standard)
 
 ---
 
