@@ -14,6 +14,7 @@ from app.processors.ai import process_with_ai
 from app.processors.intent import classify_intent, Intent
 from app.session import session_store
 from app.storage.notion import write_to_notion, update_notion_entry
+from app.exceptions import GroqError, NotionError, TelegramFileError
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -52,6 +53,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "⚠️ Saved the link but couldn't fetch the content — the site may be unavailable or access-restricted. "
                 "You can add context by replying to this message."
             )
+        elif not raw.content and input_type == InputType.PDF:
+            await message.reply_text(
+                "⚠️ Couldn't extract text from this PDF — it may be password-protected or use a non-text format (e.g. scanned image). "
+                "I'll save it with whatever metadata I can infer. You can add context by replying."
+            )
 
         entry = process_with_ai(raw)
         page_id = write_to_notion(entry)
@@ -74,10 +80,42 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         await message.reply_text(reply, parse_mode="Markdown")
 
-    except Exception as exc:
-        logger.exception("Error processing message: %s", exc)
+    except GroqError as exc:
+        session_store.clear(user_id)
+        if exc.is_rate_limit:
+            await message.reply_text(
+                "⚠️ Hit Groq's rate limit — wait a minute and try again.\n"
+                "_(Free tier: 30 requests/min, 1K requests/day)_",
+                parse_mode="Markdown"
+            )
+        else:
+            logger.exception("Groq API error: %s", exc)
+            await message.reply_text(
+                "⚠️ The AI service (Groq) had an error — this is usually temporary. "
+                "Try again in a moment."
+            )
+
+    except NotionError as exc:
+        session_store.clear(user_id)
+        logger.exception("Notion error: %s", exc)
         await message.reply_text(
-            "Sorry, something went wrong saving that. Please try again."
+            "⚠️ Saved by AI but couldn't write to Notion — "
+            "check the integration token in your Render env vars."
+        )
+
+    except TelegramFileError as exc:
+        session_store.clear(user_id)
+        logger.exception("Telegram file download error: %s", exc)
+        await message.reply_text(
+            "⚠️ Couldn't download your file from Telegram — try resending it."
+        )
+
+    except Exception as exc:
+        session_store.clear(user_id)
+        logger.exception("Unexpected error: %s", exc)
+        await message.reply_text(
+            "⚠️ Something unexpected went wrong — try again. "
+            "If it keeps happening, check the Render logs."
         )
 
 
@@ -113,9 +151,12 @@ async def _extract_content(message, input_type: InputType, context) -> RawInput:
         )
 
     elif input_type == InputType.IMAGE:
-        photo = message.photo[-1]  # highest resolution
-        file = await context.bot.get_file(photo.file_id)
-        image_bytes = await file.download_as_bytearray()
+        try:
+            photo = message.photo[-1]  # highest resolution
+            file = await context.bot.get_file(photo.file_id)
+            image_bytes = await file.download_as_bytearray()
+        except Exception as e:
+            raise TelegramFileError("image download failed") from e
         caption = getattr(message, "caption", None)
         return RawInput(
             input_type=input_type,
@@ -124,8 +165,11 @@ async def _extract_content(message, input_type: InputType, context) -> RawInput:
         )
 
     elif input_type == InputType.PDF:
-        file = await context.bot.get_file(message.document.file_id)
-        pdf_bytes = await file.download_as_bytearray()
+        try:
+            file = await context.bot.get_file(message.document.file_id)
+            pdf_bytes = await file.download_as_bytearray()
+        except Exception as e:
+            raise TelegramFileError("PDF download failed") from e
         caption = getattr(message, "caption", None)
         return RawInput(
             input_type=input_type,
@@ -135,8 +179,11 @@ async def _extract_content(message, input_type: InputType, context) -> RawInput:
         )
 
     elif input_type == InputType.VOICE:
-        file = await context.bot.get_file(message.voice.file_id)
-        audio_bytes = await file.download_as_bytearray()
+        try:
+            file = await context.bot.get_file(message.voice.file_id)
+            audio_bytes = await file.download_as_bytearray()
+        except Exception as e:
+            raise TelegramFileError("voice download failed") from e
         transcript = transcribe_voice(bytes(audio_bytes))
         return RawInput(
             input_type=InputType.TEXT,

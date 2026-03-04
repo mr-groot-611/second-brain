@@ -1,6 +1,10 @@
+import logging
 from enum import Enum
-from openai import OpenAI
+from openai import OpenAI, RateLimitError, APIError
 from app.config import settings
+from app.exceptions import GroqError
+
+logger = logging.getLogger(__name__)
 
 
 class Intent(str, Enum):
@@ -34,12 +38,20 @@ def classify_intent(last_entry: dict, new_message: str) -> Intent:
         headline=last_entry.get("headline", last_entry.get("summary", "")),
         message=new_message,
     )
-    response = client.chat.completions.create(
-        model="llama-3.1-8b-instant",  # lightweight model — simple classification task
-        messages=[{"role": "user", "content": prompt}],
-        max_tokens=5,
-        temperature=0,
-    )
+    try:
+        response = client.chat.completions.create(
+            model="llama-3.1-8b-instant",  # lightweight model — simple classification task
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=5,
+            temperature=0,
+        )
+    except RateLimitError as e:
+        logger.warning("Groq rate limit hit during intent classification: %s", e)
+        raise GroqError("rate limit", is_rate_limit=True) from e
+    except APIError as e:
+        logger.exception("Groq API error during intent classification: %s", e)
+        raise GroqError(str(e)) from e
+
     raw = response.choices[0].message.content.strip().upper()
     try:
         return Intent(raw)

@@ -1,7 +1,12 @@
 import json
+import logging
 from notion_client import Client
+from notion_client.errors import APIResponseError
 from app.models import ProcessedEntry
 from app.config import settings
+from app.exceptions import NotionError
+
+logger = logging.getLogger(__name__)
 
 
 def write_to_notion(entry: ProcessedEntry) -> str:
@@ -53,30 +58,38 @@ def write_to_notion(entry: ProcessedEntry) -> str:
         for chunk in content_chunks
     ]
 
-    response = client.pages.create(
-        parent={"database_id": settings.notion_database_id},
-        properties=properties,
-        children=children[:100],  # Notion API limit: 100 blocks per request
-    )
+    try:
+        response = client.pages.create(
+            parent={"database_id": settings.notion_database_id},
+            properties=properties,
+            children=children[:100],  # Notion API limit: 100 blocks per request
+        )
+    except APIResponseError as e:
+        logger.exception("Notion write failed: %s", e)
+        raise NotionError(str(e)) from e
     return response["id"]
 
 
 def update_notion_entry(page_id: str, additional_context: str):
     """Append additional context to an existing Notion page body."""
     client = Client(auth=settings.notion_token)
-    client.blocks.children.append(
-        block_id=page_id,
-        children=[{
-            "object": "block",
-            "type": "paragraph",
-            "paragraph": {
-                "rich_text": [{
-                    "type": "text",
-                    "text": {"content": f"[Update] {additional_context[:2000]}"}
-                }]
-            }
-        }]
-    )
+    try:
+        client.blocks.children.append(
+            block_id=page_id,
+            children=[{
+                "object": "block",
+                "type": "paragraph",
+                "paragraph": {
+                    "rich_text": [{
+                        "type": "text",
+                        "text": {"content": f"[Update] {additional_context[:2000]}"}
+                    }]
+                }
+            }]
+        )
+    except APIResponseError as e:
+        logger.exception("Notion update failed: %s", e)
+        raise NotionError(str(e)) from e
 
 
 def _chunk_text(text: str, size: int) -> list[str]:

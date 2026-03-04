@@ -209,4 +209,68 @@ Needs a model with solid function/tool calling support. `llama-4-scout` and `lla
 
 ---
 
-*Last updated: March 2026 — Bug 1 broadened from Reddit share links to general URL extraction fragility; Jina AI Reader added as recommended fix*
+---
+
+## 6. Post-Deployment Bug Fixes (March 2026 — Live Testing)
+
+The following issues were found during first live testing of the deployed Groq + new schema implementation.
+
+**Bug 5 — Base64 image content dumped into Notion page body**
+
+**Root cause:** `prepare_image()` in `image.py` returns a base64-encoded string. This is stored as `raw.content` on `RawInput`. In `ai.py`, `raw.content` is correctly used to construct the `image_url` payload for Groq Vision. However, `ProcessedEntry.raw_content` was set to `raw.content` for all input types — meaning the full base64 blob (~80K chars) was written into the Notion page body as plain text.
+
+**Fix (applied):** In `ai.py`, `raw_content` is now set to `""` for `InputType.IMAGE` entries:
+```python
+page_raw_content = "" if raw.input_type == InputType.IMAGE else raw.content
+```
+Image entries now have a clean empty page body. The AI's analysis is captured in `Title`, `Headline`, `Tags`, and `Metadata` as intended.
+
+**Note — file uploads to Notion remain deferred:** The Notion `File` property requires a publicly accessible URL. Telegram CDN file URLs contain the bot token (sensitive), and hosting binary files on the free Render tier is not straightforward. File upload support is deferred to a future phase.
+
+**Bug 6 — Title and Headline are redundant (AI prompt issue)**
+
+**Root cause:** The system prompt described `title` as "descriptive title (max 10 words)" — the AI interpreted this as a news headline. Combined with `headline` described as "one sentence capturing the single most useful thing to remember", the AI generated two near-identical news-style sentences, e.g.:
+- Title: "Claude AI Design Skill Generates UI with 80% Accuracy"
+- Headline: "Product designer creates Claude skill for 80% accurate UI designs"
+
+**Fix (applied):** System prompt updated to clearly distinguish the two:
+- `title`: **"filing label (3-6 words) — like naming a folder, NOT a news headline"** with bad/good examples
+- `headline`: **"one sentence capturing WHY the user saved this — the key insight, action item, or takeaway. Must NOT restate the title."** with bad/good examples
+
+**Bug 7 — PDF processing fails silently with no error handling**
+
+**Root cause:** `extract_pdf()` in `pdf.py` had no try/except. Any failure (encrypted PDF, corrupted file, fitz runtime error) threw an unhandled exception that bubbled up to `handle_message`'s generic `except` block, showing "Sorry, something went wrong." with no indication it was a PDF-specific issue.
+
+Additionally, the bot had no empty-content warning for PDFs (unlike URLs), so even if extraction returned `""`, the bot would save a hollow entry silently.
+
+**Fix (applied):**
+- `pdf.py`: wrapped in try/except; detects `doc.is_encrypted` and returns a human-readable placeholder; returns `""` on any other exception
+- `message.py`: added empty-content warning for `InputType.PDF` mirroring the URL warning
+
+**Note — exact root cause of the specific failure (NOC PDF) unknown:** Could be password protection, a Groq transient error, or a PyMuPDF build issue on Render. Check Render service logs for the precise exception. The fix ensures any future failure produces a meaningful message rather than a crash.
+
+**Bug 8 — Session not cleared on exception → cascading failures + accidental duplicate entries**
+
+**Root cause:** `message.py`'s `except` block only logs the error and replies to the user — it never calls `session_store.clear(user_id)`. After any failed save, the previous session entry stays active. The next message hits the `classify_intent` branch, potentially gets routed incorrectly (or fails again if Groq is having a transient error), producing another error. If the user re-sends after manually typing "Done" to clear the session, the message saves correctly — creating a **duplicate Notion entry** (one from the failed-but-partially-saved run, one from the re-send).
+
+Observed: "Improving Ad Spend ROI" / "Ad Spend ROI Idea" — two identical entries 1 minute apart, same original message.
+
+**Fix (applied):** Added `session_store.clear(user_id)` in the `except` block in `message.py`. After any exception, the next message always starts a fresh save pipeline.
+
+**Improvement — Specific error messages per failure type**
+
+**Problem:** All failures collapsed into one generic "Sorry, something went wrong saving that. Please try again." with no signal about what failed or what to do.
+
+**Fix (applied):** Introduced `app/exceptions.py` with three custom exception classes:
+- `GroqError(is_rate_limit: bool)` — raised by `ai.py` and `intent.py` when any `openai.APIError` is caught
+- `NotionError` — raised by `notion.py` when `notion_client.errors.APIResponseError` is caught
+- `TelegramFileError` — raised by `message.py._extract_content` when file download fails
+
+`handle_message` now catches each type separately with a tailored reply:
+- Groq rate limit → "⚠️ Hit Groq's rate limit — wait a minute and try again. _(Free tier: 30 req/min, 1K/day)_"
+- Groq API error → "⚠️ The AI service (Groq) had an error — this is usually temporary. Try again in a moment."
+- Notion error → "⚠️ Saved by AI but couldn't write to Notion — check the integration token in your Render env vars."
+- Telegram file error → "⚠️ Couldn't download your file from Telegram — try resending it."
+- Unexpected error → "⚠️ Something unexpected went wrong — try again. If it keeps happening, check the Render logs."
+
+*Last updated: March 2026 — Added Bug 7 (PDF silent failure), Bug 8 (session not cleared on error), error message improvement; all applied*
