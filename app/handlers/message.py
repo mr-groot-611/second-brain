@@ -1,5 +1,8 @@
+import logging
 from telegram import Update
 from telegram.ext import ContextTypes
+
+logger = logging.getLogger(__name__)
 
 from app.extractors.detector import detect_input_type
 from app.extractors.url import extract_url
@@ -64,6 +67,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await message.reply_text(reply, parse_mode="Markdown")
 
     except Exception as exc:
+        logger.exception("Error processing message: %s", exc)
         await message.reply_text(
             "Sorry, something went wrong saving that. Please try again."
         )
