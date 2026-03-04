@@ -58,7 +58,7 @@ def process_with_gemini(raw: RawInput) -> ProcessedEntry:
         import base64
         prompt = f"{SYSTEM_PROMPT}\n\nAnalyse this image the user saved."
         response = client.models.generate_content(
-            model="gemini-2.0-flash",
+            model="gemini-2.5-flash",
             contents=[
                 types.Part.from_text(prompt),
                 types.Part.from_bytes(data=base64.b64decode(raw.content), mime_type="image/jpeg"),
@@ -67,7 +67,7 @@ def process_with_gemini(raw: RawInput) -> ProcessedEntry:
     else:
         prompt = f"{SYSTEM_PROMPT}\n\nContent to analyse:\n\n{raw.content}"
         response = client.models.generate_content(
-            model="gemini-2.0-flash",
+            model="gemini-2.5-flash",
             contents=prompt,
         )
 
