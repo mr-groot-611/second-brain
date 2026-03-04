@@ -8,7 +8,7 @@ def transcribe_voice(audio_bytes: bytes) -> str:
     client = genai.Client(api_key=settings.gemini_api_key)
 
     response = client.models.generate_content(
-        model="gemini-1.5-flash",
+        model="gemini-2.0-flash",
         contents=[
             types.Part.from_text("Transcribe this voice note accurately. Return only the transcription, no commentary."),
             types.Part.from_bytes(data=audio_bytes, mime_type="audio/ogg"),
