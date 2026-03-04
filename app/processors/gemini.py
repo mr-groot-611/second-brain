@@ -1,5 +1,6 @@
 import json
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 from app.models import RawInput, InputType, ProcessedEntry
 from app.config import settings
 
@@ -51,17 +52,24 @@ Be specific and accurate. Extract only what is clearly present in the content â€
 
 
 def process_with_gemini(raw: RawInput) -> ProcessedEntry:
-    genai.configure(api_key=settings.gemini_api_key)
-    model = genai.GenerativeModel("gemini-1.5-flash")
+    client = genai.Client(api_key=settings.gemini_api_key)
 
     if raw.input_type == InputType.IMAGE:
         import base64
-        image_data = {"mime_type": "image/jpeg", "data": raw.content}
         prompt = f"{SYSTEM_PROMPT}\n\nAnalyse this image the user saved."
-        response = model.generate_content([prompt, image_data])
+        response = client.models.generate_content(
+            model="gemini-1.5-flash",
+            contents=[
+                types.Part.from_text(prompt),
+                types.Part.from_bytes(data=base64.b64decode(raw.content), mime_type="image/jpeg"),
+            ],
+        )
     else:
         prompt = f"{SYSTEM_PROMPT}\n\nContent to analyse:\n\n{raw.content}"
-        response = model.generate_content(prompt)
+        response = client.models.generate_content(
+            model="gemini-1.5-flash",
+            contents=prompt,
+        )
 
     try:
         # Strip markdown code fences if Gemini adds them

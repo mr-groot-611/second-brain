@@ -1,5 +1,5 @@
 from enum import Enum
-import google.generativeai as genai
+from google import genai
 from app.config import settings
 
 
@@ -27,15 +27,17 @@ Reply with only one word: CONTEXT, DONE, or NEW.
 
 
 def classify_intent(last_entry: dict, new_message: str) -> Intent:
-    genai.configure(api_key=settings.gemini_api_key)
-    model = genai.GenerativeModel("gemini-1.5-flash")
+    client = genai.Client(api_key=settings.gemini_api_key)
 
     prompt = INTENT_PROMPT.format(
         title=last_entry.get("title", ""),
         summary=last_entry.get("summary", ""),
         message=new_message
     )
-    response = model.generate_content(prompt)
+    response = client.models.generate_content(
+        model="gemini-1.5-flash",
+        contents=prompt,
+    )
     raw = response.text.strip().upper()
 
     try:

@@ -1,18 +1,17 @@
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 from app.config import settings
 
 
 def transcribe_voice(audio_bytes: bytes) -> str:
     """Transcribe a Telegram voice note (OGG/Opus) using Gemini Audio."""
-    genai.configure(api_key=settings.gemini_api_key)
-    model = genai.GenerativeModel("gemini-1.5-flash")
+    client = genai.Client(api_key=settings.gemini_api_key)
 
-    audio_part = {
-        "mime_type": "audio/ogg",
-        "data": audio_bytes
-    }
-    response = model.generate_content([
-        "Transcribe this voice note accurately. Return only the transcription, no commentary.",
-        audio_part
-    ])
+    response = client.models.generate_content(
+        model="gemini-1.5-flash",
+        contents=[
+            types.Part.from_text("Transcribe this voice note accurately. Return only the transcription, no commentary."),
+            types.Part.from_bytes(data=audio_bytes, mime_type="audio/ogg"),
+        ],
+    )
     return response.text.strip()
