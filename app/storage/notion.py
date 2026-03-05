@@ -19,18 +19,18 @@ def _heading_block(text: str) -> dict:
         "object": "block",
         "type": "heading_2",
         "heading_2": {
-            "rich_text": [{"type": "text", "text": {"content": text}}]
+            "rich_text": [{"type": "text", "text": {"content": _sanitize(text)}}]
         },
     }
 
 
 def _paragraph_block(text: str) -> dict:
-    """Create a paragraph block (text truncated to 2000 chars for Notion limit)."""
+    """Create a paragraph block (text sanitized and truncated to 2000 chars for Notion limit)."""
     return {
         "object": "block",
         "type": "paragraph",
         "paragraph": {
-            "rich_text": [{"type": "text", "text": {"content": text[:2000]}}]
+            "rich_text": [{"type": "text", "text": {"content": _sanitize(text)[:2000]}}]
         },
     }
 
@@ -120,22 +120,22 @@ def write_to_notion(entry: ProcessedEntry) -> str:
 
     properties = {
         "Name": {
-            "title": [{"text": {"content": entry.title}}]
+            "title": [{"text": {"content": _sanitize(entry.title)}}]
         },
         "Type": {
-            "select": {"name": entry.content_type}
+            "select": {"name": _sanitize(entry.content_type)}
         },
         "Headline": {
-            "rich_text": [{"text": {"content": entry.headline[:2000]}}]
+            "rich_text": [{"text": {"content": _sanitize(entry.headline)[:2000]}}]
         },
         "Tags": {
-            "multi_select": [{"name": tag} for tag in entry.tags]
+            "multi_select": [{"name": _sanitize(tag)} for tag in entry.tags]
         },
         "Starred": {
             "checkbox": False
         },
         "Metadata": {
-            "rich_text": [{"text": {"content": json.dumps(entry.metadata, ensure_ascii=False)[:2000]}}]
+            "rich_text": [{"text": {"content": _sanitize(json.dumps(entry.metadata, ensure_ascii=False))[:2000]}}]
         },
     }
 
@@ -144,7 +144,7 @@ def write_to_notion(entry: ProcessedEntry) -> str:
 
     if entry.original_message:
         properties["Original Message"] = {
-            "rich_text": [{"text": {"content": entry.original_message[:2000]}}]
+            "rich_text": [{"text": {"content": _sanitize(entry.original_message)[:2000]}}]
         }
 
     children = _build_page_body(entry)
@@ -227,7 +227,7 @@ def append_to_conversation_log(page_id: str, speaker: str, message: str):
     Conversation section lives by design.
     """
     client = Client(auth=settings.notion_token)
-    text = f"{speaker}: {message}"[:2000]
+    text = _sanitize(f"{speaker}: {message}")[:2000]
     try:
         client.blocks.children.append(
             block_id=page_id,
@@ -314,3 +314,13 @@ async def upload_and_attach_file(
 
 def _chunk_text(text: str, size: int) -> list[str]:
     return [text[i:i + size] for i in range(0, len(text), size)] if text else [""]
+
+
+def _sanitize(text: str) -> str:
+    """Strip characters above U+FFFF (non-BMP) that Notion's API rejects.
+
+    Characters like certain emoji (e.g. 🙌 U+1F64C) require surrogate pairs
+    in UTF-16 and cause Notion to return a 400 validation error. We replace
+    them with a replacement character rather than silently dropping content.
+    """
+    return "".join(c if ord(c) <= 0xFFFF else "\uFFFD" for c in text)
