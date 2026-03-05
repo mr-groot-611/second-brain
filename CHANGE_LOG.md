@@ -1,6 +1,43 @@
 # Change Log
 > Rewritten each session. Claude Code should apply all changes listed here that haven't been deployed yet.
-> Last updated: March 2026 (Session 3 — video note bug identified)
+> Last updated: March 2026 (Session 4 — Notion unicode fix)
+
+---
+
+## Session 4 — Notion Non-BMP Unicode Bug Fix
+
+### Status: Committed, **needs push to deploy** ⚠️
+
+**To deploy:** `git push origin HEAD:main` from the repo root. Render auto-deploys within ~3 min.
+
+**Bug fixed:** Saving certain URLs (e.g. Instagram reels with emoji in scraped content) failed with the misleading error "Saved by AI but couldn't write to Notion — check the integration token". The Notion token was fine; the real cause was emoji characters above U+FFFF (non-BMP, e.g. 🙌 U+1F64C) in the Jina-extracted raw content. Notion's API returns a 400 `APIResponseError` for these, which the handler was catching as `NotionError` and displaying as a token error.
+
+**Root cause confirmed by:** Comparing two Instagram URLs — the working one had 0 non-BMP chars in Jina output; the failing one had 6.
+
+---
+
+### `app/storage/notion.py`
+**One new function, applied in 7 places.**
+
+New helper at bottom of file:
+```python
+def _sanitize(text: str) -> str:
+    """Strip characters above U+FFFF (non-BMP) that Notion's API rejects.
+
+    Characters like certain emoji (e.g. 🙌 U+1F64C) require surrogate pairs
+    in UTF-16 and cause Notion to return a 400 validation error. We replace
+    them with a replacement character rather than silently dropping content.
+    """
+    return "".join(c if ord(c) <= 0xFFFF else "\uFFFD" for c in text)
+```
+
+`_sanitize()` is now called on every text value before it reaches the Notion API:
+- `_heading_block(text)` — `_sanitize(text)`
+- `_paragraph_block(text)` — `_sanitize(text)[:2000]`
+- `write_to_notion()` properties: `entry.title`, `entry.content_type`, `entry.headline`, each `tag` in `entry.tags`, `json.dumps(entry.metadata, ...)`, `entry.original_message`
+- `append_to_conversation_log()` — sanitize the assembled `"{speaker}: {message}"` string
+
+No schema changes. No new dependencies. 67 tests passing.
 
 ---
 
