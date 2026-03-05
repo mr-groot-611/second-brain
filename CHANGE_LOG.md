@@ -1,12 +1,30 @@
 # Change Log
 > Rewritten each session. Claude Code should apply all changes listed here that haven't been deployed yet.
-> Last updated: March 2026 (Session 2 — post-deployment bug fixes + file upload design)
+> Last updated: March 2026 (Session 3 — video note bug identified)
+
+---
+
+## Session 3 — Video Note Handling (pending decision)
+
+### Status: Not yet implemented
+
+**Bug found:** Telegram video notes (`message.video_note` — the round circular video format) are not handled by the bot. They fall through silently: no response to the user, nothing saved to Notion.
+
+**Root cause:** `detector.py` only checks `message.voice` for voice/audio input. `message.video_note` is a separate Telegram message type and is never matched.
+
+**Decision pending:** Two options:
+1. **Graceful rejection** — reply "🎥 Video notes aren't supported — please send a regular voice message" (simple, ~5 lines)
+2. **Full transcription support** — download video note, extract audio, pass to Whisper (requires `ffmpeg` on Render)
+
+**Files to change (if option 1 — recommended):**
+- `app/extractors/detector.py` — add `InputType.UNSUPPORTED` or check `message.video_note` explicitly
+- `app/handlers/message.py` — handle the unrecognised type and reply with helpful message
 
 ---
 
 ## Session 2 — Post-Deployment Bug Fixes & Error Handling
 
-### Status: Ready to deploy (not yet pushed to GitHub)
+### Status: Deployed ✅
 
 ---
 
@@ -80,7 +98,7 @@ except APIError as e:
 
 ## Session 2 — File Upload Feature
 
-### Status: Implemented — ready to deploy
+### Status: Deployed ✅
 
 **Decision summary:**
 - Files (images, PDFs) will be uploaded directly to Notion using the Notion File Upload API — no external hosting needed

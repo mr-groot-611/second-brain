@@ -273,4 +273,14 @@ Observed: "Improving Ad Spend ROI" / "Ad Spend ROI Idea" — two identical entri
 - Telegram file error → "⚠️ Couldn't download your file from Telegram — try resending it."
 - Unexpected error → "⚠️ Something unexpected went wrong — try again. If it keeps happening, check the Render logs."
 
-*Last updated: March 2026 — Added Bug 7 (PDF silent failure), Bug 8 (session not cleared on error), error message improvement; all applied*
+**Bug 9 — Telegram video notes fall through silently (not handled)**
+
+**Root cause:** `detector.py` only checks `message.voice` for audio input. Telegram has a second audio-bearing message type — `message.video_note` (the circular video format recorded with the camera button). This type is never matched in the detector, so it falls through to `InputType.TEXT` with no text content, and the save either produces a hollow entry or drops silently. The user receives no response.
+
+**Observed:** User sent a 16-second video note at 3:10 AM. Bot gave no response. Nothing saved to Notion. User's follow-up "Hello" was treated as context for the previous session entry instead.
+
+**Fix (pending decision):**
+- Option A (recommended): add a check for `message.video_note` in `detector.py` (or `message.py`) and reply with "🎥 Video notes aren't supported — please send a regular voice message." Simple, ~5 lines.
+- Option B: download video note bytes, extract audio track via `ffmpeg`, pass to Whisper. Requires `ffmpeg` installed on Render (possible but adds complexity).
+
+*Last updated: March 2026 — Added Bug 9 (video notes not handled); Bugs 5–8 all applied and deployed*

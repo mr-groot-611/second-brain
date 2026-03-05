@@ -20,3 +20,8 @@ class NotionError(Exception):
 class TelegramFileError(Exception):
     """Raised when downloading a file from Telegram fails."""
     pass
+
+
+class BraveSearchError(Exception):
+    """Raised when a Brave Search API call fails."""
+    pass

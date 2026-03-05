@@ -21,7 +21,8 @@ Analyse the content and return ONLY a valid JSON object (no markdown, no explana
   "content_type": "prefer from: Article / Reddit / Recipe / Contact / Book / Note / Product / Place / Video / Lead / Idea — but invent a new precise type name if none fit",
   "headline": "one sentence capturing WHY the user saved this — the key insight, action item, or takeaway. Must NOT restate the title. Answer: what's useful to know when scanning this entry later?",
   "tags": ["2-5 relevant lowercase tags"],
-  "metadata": {}
+  "metadata": {},
+  "ai_summary": "2-4 paragraph interpretive analysis (see guidelines below)"
 }
 
 Title examples (filing labels, not headlines):
@@ -53,6 +54,17 @@ Idea        → {"problem": "...", "hypothesis": "...", "next_step": "..."}
 Event       → {"event_name": "...", "date": "...", "speaker": "...", "topic": "..."}
 Dynamic     → choose the most relevant fields, or leave metadata as {}
 
+AI Summary guidelines — adapt the summary style to the content type:
+  Article / URL  → Key takeaways, why it matters, what to remember when scanning later
+  Image          → Detailed description of what's visible in the image, context, and relevance
+  PDF            → What the document covers, key sections, why it was saved
+  Voice note     → Cleaned-up, structured version of what the user said — remove filler, organize the thought
+  Bare idea/text → Structured framing: problem statement, hypothesis, what's actionable
+  Contact        → Who this person is, context on why they're relevant, any notable details
+  Recipe         → Brief overview of the dish, key techniques, what makes it interesting
+  Book/media     → What it's about, key themes, why it might be worth reading/watching
+Keep the summary between 100-500 words. Be specific and useful, not generic.
+
 Be specific and accurate. Extract only what is clearly present — do not invent information.
 """
 
@@ -79,7 +91,7 @@ def process_with_ai(raw: RawInput) -> ProcessedEntry:
             response = client.chat.completions.create(
                 model="meta-llama/llama-4-scout-17b-16e-instruct",
                 messages=messages,
-                max_tokens=1024,
+                max_tokens=2048,
             )
         else:
             user_content = f"Content to analyse:\n\n{raw.content}"
@@ -92,7 +104,7 @@ def process_with_ai(raw: RawInput) -> ProcessedEntry:
             response = client.chat.completions.create(
                 model="llama-3.3-70b-versatile",
                 messages=messages,
-                max_tokens=1024,
+                max_tokens=2048,
             )
     except RateLimitError as e:
         logger.warning("Groq rate limit hit: %s", e)
@@ -118,6 +130,7 @@ def process_with_ai(raw: RawInput) -> ProcessedEntry:
             raw_content=page_raw_content,
             original_message=raw.original_message,
             metadata=data.get("metadata", {}),
+            ai_summary=data.get("ai_summary", ""),
         )
     except (json.JSONDecodeError, KeyError):
         return ProcessedEntry(
@@ -129,4 +142,76 @@ def process_with_ai(raw: RawInput) -> ProcessedEntry:
             raw_content=page_raw_content,
             original_message=raw.original_message,
             metadata={},
+            ai_summary="",
         )
+
+
+CONTEXT_UPDATE_PROMPT = """The user previously saved this entry to their personal knowledge base:
+  Title: {title}
+  Type: {type}
+  Headline: {headline}
+  Tags: {tags}
+  Metadata: {metadata}
+
+They've now added this additional context: "{new_message}"
+
+Return ONLY a valid JSON object with any fields that should be updated based on the new information.
+Only include fields that need changing. Available fields: "headline", "tags", "metadata".
+Keep the title unless the new info fundamentally changes what the entry is about — in that case include "title".
+
+For metadata: merge the new info into the existing metadata object. Return the FULL updated metadata, not just the additions.
+For tags: return the FULL updated tag list (add new tags as needed, keep relevant existing ones).
+For headline: update ONLY if the new information meaningfully changes the key insight.
+
+Example:
+  Existing: Title="Sarah Chen Contact", Metadata={{"contact_name": "Sarah Chen"}}
+  New context: "She's at Stripe, ML team"
+  Output: {{"metadata": {{"contact_name": "Sarah Chen", "company": "Stripe", "role": "ML team"}}, "tags": ["contact", "stripe", "ml"]}}
+"""
+
+
+def process_context_update(existing_entry: dict, new_message: str) -> dict:
+    """Re-process a CONTEXT message to produce updated entry properties.
+
+    Args:
+        existing_entry: dict with title, type, headline, tags, metadata
+        new_message: the user's follow-up message
+
+    Returns:
+        dict of updated fields (only fields that changed)
+    """
+    tags = existing_entry.get("tags", [])
+    tags_str = ", ".join(tags) if tags else "none"
+    metadata = existing_entry.get("metadata", {})
+    metadata_str = json.dumps(metadata, ensure_ascii=False) if metadata else "{}"
+
+    prompt = CONTEXT_UPDATE_PROMPT.format(
+        title=existing_entry.get("title", ""),
+        type=existing_entry.get("type", ""),
+        headline=existing_entry.get("headline", ""),
+        tags=tags_str,
+        metadata=metadata_str,
+        new_message=new_message,
+    )
+
+    try:
+        response = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=1024,
+            temperature=0,
+        )
+    except RateLimitError as e:
+        logger.warning("Groq rate limit hit during context update: %s", e)
+        raise GroqError("rate limit", is_rate_limit=True) from e
+    except APIError as e:
+        logger.exception("Groq API error during context update: %s", e)
+        raise GroqError(str(e)) from e
+
+    try:
+        text = response.choices[0].message.content.strip()
+        text = text.removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+        return json.loads(text)
+    except (json.JSONDecodeError, KeyError):
+        logger.warning("Failed to parse context update response: %s", text[:200])
+        return {}

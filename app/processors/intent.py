@@ -1,4 +1,5 @@
 import logging
+import time
 from enum import Enum
 from openai import OpenAI, RateLimitError, APIError
 from app.config import settings
@@ -14,28 +15,60 @@ class Intent(str, Enum):
 
 
 INTENT_PROMPT = """A user is chatting with a personal knowledge assistant.
-They previously saved an entry:
-  Title: {title}
+
+Previously saved entry:
+  Title: {title} | Type: {type} | Tags: {tags}
   Headline: {headline}
 
-They have now sent this new message: "{message}"
+Bot's last message to user: "{bot_last_message}"
+Time since last interaction: {elapsed}
+
+User's new message: "{message}"
 
 Classify their intent as exactly one of:
-- CONTEXT: this message adds information to the previously saved entry
+- CONTEXT: this message adds information or answers the bot's question about the previously saved entry
 - DONE: this is an acknowledgement (e.g. "ok", "thanks", "nope", "all good", a thumbs up emoji) — they are finished with the previous entry
 - NEW: this is a completely unrelated new item they want to save
 
 Reply with only one word: CONTEXT, DONE, or NEW."""
 
 
-def classify_intent(last_entry: dict, new_message: str) -> Intent:
+def _format_elapsed(last_interaction_at: float) -> str:
+    """Convert a timestamp to a human-readable elapsed time string."""
+    if not last_interaction_at:
+        return "unknown"
+    elapsed = time.time() - last_interaction_at
+    if elapsed < 60:
+        return f"{int(elapsed)} seconds ago"
+    elif elapsed < 3600:
+        return f"{int(elapsed / 60)} minutes ago"
+    else:
+        return f"{int(elapsed / 3600)} hours ago"
+
+
+def classify_intent(session: dict, new_message: str) -> Intent:
+    """Classify user intent using the full session context.
+
+    Args:
+        session: The session dict containing page_id, title, type, headline,
+                 tags, bot_last_message, last_interaction_at, etc.
+        new_message: The user's new message text.
+    """
     client = OpenAI(
         api_key=settings.groq_api_key,
         base_url="https://api.groq.com/openai/v1",
     )
+
+    tags = session.get("tags", [])
+    tags_str = ", ".join(tags) if tags else "none"
+
     prompt = INTENT_PROMPT.format(
-        title=last_entry.get("title", ""),
-        headline=last_entry.get("headline", last_entry.get("summary", "")),
+        title=session.get("title", ""),
+        type=session.get("type", ""),
+        tags=tags_str,
+        headline=session.get("headline", ""),
+        bot_last_message=session.get("bot_last_message", ""),
+        elapsed=_format_elapsed(session.get("last_interaction_at", 0)),
         message=new_message,
     )
     try:

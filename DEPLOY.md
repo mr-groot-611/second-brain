@@ -5,7 +5,21 @@
 
 ## What Changed (Summary)
 
-### Bug Fixes
+### Phase 3 — Agentic Enrichment Pipeline
+| Feature | Files | Change |
+|---|---|---|
+| AI Summary in page body | `app/processors/ai.py`, `app/models.py` | `ProcessedEntry` now includes `ai_summary` field; system prompt produces 2-4 paragraph analysis per content type; max_tokens raised to 2048 |
+| Structured Notion page body | `app/storage/notion.py` | Page body rebuilt with sections: **AI Summary → Raw Content → Conversation Log**, separated by dividers. 100-block limit enforced. |
+| Conversation log | `app/storage/notion.py` | `append_to_conversation_log()` — appends "Speaker: message" blocks to page. Used by all handlers. |
+| Smart CONTEXT handler | `app/processors/ai.py`, `app/handlers/message.py` | `process_context_update()` merges follow-up info into existing entry properties (metadata, tags, headline) via AI. Replaces dumb text append. |
+| Session upgrades | `app/session.py` | Richer session data (tags, metadata, bot_last_message), 5-minute TTL auto-expiry, `update_interaction()` for timestamp refresh. |
+| Intent classification v2 | `app/processors/intent.py` | Prompt now includes entry type, tags, bot's last message, elapsed time for better CONTEXT vs NEW distinction. |
+| Brave Search client | `app/agents/tools.py` | `web_search()` via Brave Search API (httpx). Daily counter, graceful skip if no API key. |
+| Enrichment agent | `app/agents/enrichment.py` | Background agent fires after every save. Uses Groq tool calling (web_search, update_entry, ask_user). 3-round cap. Sends "✨ Enriched" notification on updates. |
+| Notion property updates | `app/storage/notion.py` | `update_notion_properties()` — updates specific properties (title, headline, tags, metadata) via `client.pages.update()`. |
+| Error handling | `app/exceptions.py` | Added `BraveSearchError` for search failures. |
+
+### Phase 2 — Bug Fixes
 | Bug | File | Fix |
 |---|---|---|
 | URL extraction fragile + silent failures | `app/extractors/url.py` | Replaced trafilatura with Jina AI Reader; Reddit JSON kept as first attempt with Jina fallback; redirect resolution added for share links |
@@ -46,6 +60,7 @@ Go to [Render Dashboard](https://dashboard.render.com/web/srv-d6k1prrh46gs73e6em
 | Action | Variable | Value |
 |---|---|---|
 | **Add** | `GROQ_API_KEY` | Your Groq API key from [console.groq.com](https://console.groq.com) |
+| **Add** | `BRAVE_API_KEY` | Free key from [brave.com/search/api](https://brave.com/search/api/) — 2K queries/month free tier. Optional: enrichment agent skips search if missing. |
 | **Delete** | `GEMINI_API_KEY` | No longer needed |
 | Keep | `TELEGRAM_BOT_TOKEN` | Unchanged |
 | Keep | `NOTION_TOKEN` | Unchanged |
@@ -119,22 +134,28 @@ After deploy, test each input type via Telegram (@MyMindPalaceBot):
 
 ```
 app/
-├── config.py               ← groq_api_key replaces gemini_api_key
-├── models.py               ← added original_message to RawInput + ProcessedEntry
+├── config.py               ← groq_api_key + brave_api_key; extra="ignore" for pydantic
+├── models.py               ← added ai_summary, original_message to ProcessedEntry
+├── exceptions.py           ← GroqError + BraveSearchError
+├── session.py              ← rewritten: TTL expiry, timestamps, bot_last_message tracking
+├── agents/                 ← NEW package (Phase 3)
+│   ├── __init__.py
+│   ├── enrichment.py       ← background enrichment agent (Groq tool calling)
+│   └── tools.py            ← web_search (Brave), update_entry, ask_user
 ├── extractors/
 │   ├── detector.py         ← URL detection uses Telegram entities
 │   ├── url.py              ← Jina AI Reader + better Reddit handling
 │   └── voice.py            ← Groq Whisper
 ├── processors/
-│   ├── ai.py               ← NEW (replaces gemini.py) — Groq LLM calls
+│   ├── ai.py               ← Groq LLM + ai_summary + process_context_update()
 │   ├── gemini.py           ← DELETED
-│   └── intent.py           ← Groq llama-3.1-8b-instant
+│   └── intent.py           ← richer context (type, tags, bot_last_message, elapsed)
 ├── handlers/
-│   └── message.py          ← source_url fix, empty content warning
+│   └── message.py          ← session expiry, smart CONTEXT, conversation log, enrichment fire
 └── storage/
-    └── notion.py           ← full rewrite for new 10-field schema
+    └── notion.py           ← structured page body, conversation log, update_notion_properties()
 requirements.txt            ← openai added, google-generativeai + trafilatura removed
-.env.example                ← GROQ_API_KEY replaces GEMINI_API_KEY
+.env.example                ← GROQ_API_KEY + BRAVE_API_KEY
 ```
 
 ---

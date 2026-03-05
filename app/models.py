@@ -33,3 +33,4 @@ class ProcessedEntry(BaseModel):
     raw_content: str                        # always stored in full for future vector search
     original_message: Optional[str] = None  # verbatim what the user sent
     metadata: dict = {}                     # dynamic type-specific structured fields (JSON blob)
+    ai_summary: str = ""                    # interpretive AI analysis (key takeaways, structured framing, etc.)

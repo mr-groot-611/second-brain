@@ -11,10 +11,14 @@ from app.extractors.pdf import extract_pdf
 from app.extractors.image import prepare_image
 from app.extractors.voice import transcribe_voice
 from app.models import InputType, RawInput
-from app.processors.ai import process_with_ai
+from app.processors.ai import process_with_ai, process_context_update
 from app.processors.intent import classify_intent, Intent
 from app.session import session_store
-from app.storage.notion import write_to_notion, update_notion_entry, upload_and_attach_file
+from app.storage.notion import (
+    write_to_notion, update_notion_entry, upload_and_attach_file,
+    append_to_conversation_log, update_notion_properties,
+)
+from app.agents.enrichment import enrich_entry
 from app.exceptions import GroqError, NotionError, TelegramFileError
 
 
@@ -23,20 +27,28 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = message.from_user.id
 
     try:
-        # Step 0: Check if this is a follow-up to a previous save
+        # Step 0: Check session expiry first
         last_entry = session_store.get(user_id)
+
+        if last_entry and session_store.is_expired(user_id):
+            # Session expired — treat as new message
+            last_entry = None
+
+        # Step 0b: If session active and text-only, classify intent
         if last_entry and message.text and not message.photo and not getattr(message, "voice", None):
             intent = classify_intent(last_entry, message.text)
 
             if intent == Intent.CONTEXT:
-                update_notion_entry(last_entry["page_id"], message.text)
-                await message.reply_text(
-                    f"Updated ✏️ — added context to _{last_entry['title']}_.\nAnything else to add?",
-                    parse_mode="Markdown"
-                )
+                await _handle_context(message, user_id, last_entry)
                 return
 
             elif intent == Intent.DONE:
+                # Log to conversation and clear session
+                try:
+                    append_to_conversation_log(last_entry["page_id"], "Varun", message.text)
+                    append_to_conversation_log(last_entry["page_id"], "Second Brain", "All saved 👍")
+                except Exception:
+                    logger.exception("Failed to append conversation log on DONE")
                 session_store.clear(user_id)
                 await message.reply_text("All saved 👍")
                 return
@@ -72,13 +84,20 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 _upload_file_background(page_id, raw.file_bytes, file_name, raw.file_mime_type, message)
             )
 
-        # Store in session for potential follow-up
-        session_store.set(user_id, {
-            "page_id": page_id,
-            "title": entry.title,
+        # Fire background enrichment agent (non-blocking)
+        enrichment_data = {
             "type": entry.content_type,
+            "title": entry.title,
             "headline": entry.headline,
-        })
+            "tags": entry.tags,
+            "metadata": entry.metadata,
+            "ai_summary": entry.ai_summary,
+            "source_url": entry.source_url,
+            "raw_content": (entry.raw_content or "")[:4000],  # truncate for context window
+        }
+        asyncio.create_task(
+            enrich_entry(enrichment_data, page_id, context.bot, message.chat_id, user_id)
+        )
 
         # Conversational reply
         tags_str = " ".join(f"#{t}" for t in entry.tags) if entry.tags else ""
@@ -89,6 +108,26 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"Anything to add? Or just send your next item."
         )
         await message.reply_text(reply, parse_mode="Markdown")
+
+        # Store in session for potential follow-up (with rich data)
+        session_store.set(user_id, {
+            "page_id": page_id,
+            "title": entry.title,
+            "type": entry.content_type,
+            "headline": entry.headline,
+            "tags": entry.tags,
+            "metadata": entry.metadata,
+            "bot_last_message": reply,
+        })
+
+        # Append bot's save confirmation to conversation log (non-blocking)
+        try:
+            append_to_conversation_log(
+                page_id, "Second Brain",
+                f"✅ Saved as {entry.content_type} — {entry.title}"
+            )
+        except Exception:
+            logger.exception("Failed to append save confirmation to conversation log")
 
     except GroqError as exc:
         session_store.clear(user_id)
@@ -127,6 +166,56 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "⚠️ Something unexpected went wrong — try again. "
             "If it keeps happening, check the Render logs."
         )
+
+
+async def _handle_context(message, user_id: int, last_entry: dict):
+    """Handle a CONTEXT intent — re-process and update entry properties."""
+    page_id = last_entry["page_id"]
+
+    try:
+        # Smart re-processing: AI merges new info into existing properties
+        updates = process_context_update(last_entry, message.text)
+
+        # Update Notion properties if AI returned any changes
+        if updates:
+            update_notion_properties(page_id, updates)
+
+            # Update session with new property values
+            if "tags" in updates:
+                last_entry["tags"] = updates["tags"]
+            if "metadata" in updates:
+                last_entry["metadata"] = updates["metadata"]
+            if "headline" in updates:
+                last_entry["headline"] = updates["headline"]
+            if "title" in updates:
+                last_entry["title"] = updates["title"]
+
+        # Append to conversation log
+        append_to_conversation_log(page_id, "Varun", message.text)
+
+        # Build descriptive reply
+        if updates:
+            changed = ", ".join(updates.keys())
+            reply_text = f"Updated ✏️ — _{last_entry['title']}_ ({changed})\nAnything else to add?"
+        else:
+            reply_text = f"Updated ✏️ — added context to _{last_entry['title']}_.\nAnything else to add?"
+
+        append_to_conversation_log(page_id, "Second Brain", reply_text.split("\n")[0])
+
+        await message.reply_text(reply_text, parse_mode="Markdown")
+
+        # Refresh session timestamp
+        session_store.update_interaction(user_id, bot_message=reply_text)
+
+    except GroqError:
+        # If AI re-processing fails, fall back to legacy append
+        logger.warning("Context update AI failed, falling back to legacy append")
+        update_notion_entry(page_id, message.text)
+        append_to_conversation_log(page_id, "Varun", message.text)
+        reply_text = f"Updated ✏️ — added context to _{last_entry['title']}_.\nAnything else to add?"
+        append_to_conversation_log(page_id, "Second Brain", reply_text.split("\n")[0])
+        await message.reply_text(reply_text, parse_mode="Markdown")
+        session_store.update_interaction(user_id, bot_message=reply_text)
 
 
 async def _extract_content(message, input_type: InputType, context) -> RawInput:

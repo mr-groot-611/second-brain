@@ -22,9 +22,8 @@ def test_processed_entry_model():
     entry = ProcessedEntry(
         title="Test Article",
         content_type="Article",
-        summary="A short summary.",
+        headline="A short summary.",
         tags=["productivity"],
-        entities=["some author"],
         source_url="https://example.com",
         raw_content="Full article text here...",
         metadata={"key_takeaway": "Do less, better"}
@@ -38,9 +37,8 @@ def test_processed_entry_metadata_defaults_empty():
     entry = ProcessedEntry(
         title="Test",
         content_type="Note",
-        summary="A note.",
+        headline="A note.",
         tags=[],
-        entities=[],
         raw_content="some text"
     )
     assert entry.metadata == {}
